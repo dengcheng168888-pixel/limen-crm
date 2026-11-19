@@ -1,0 +1,4 @@
+# 示例，仅将相应站点片段合并到当前 Caddy 配置；不要覆盖已有站点。
+crm.koigatetech.com {
+    reverse_proxy 127.0.0.1:8780
+}

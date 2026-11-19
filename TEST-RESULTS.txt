@@ -1,0 +1,5 @@
+通过：FastAPI TestClient 的登录及错误密码、CSRF 防护、网站询盘入库、重复提交、联系人去重、Chatwoot HMAC 验证、归因来源保留、并发修订冲突、历史保留、事件唯一键、真实回传默认关闭、退出登录及审计写入。
+通过：Uvicorn 真实 HTTP 服务启动，数据库重启持久化、登录、页面返回。
+通过：Node JavaScript 语法检查、Python 编译及 Shell 语法检查。
+未通过环境验证：当前 Chromium 环境禁止访问本地 127.0.0.1 页面，未完成真实浏览器交互或手机 Safari 验收。
+未运行：Docker 容器环境不可用；上游 Chatwoot、Frappe 安装未实测；Meta、TikTok、Google、OpenAI 帐号均未授权，不曾发送真实数据。
