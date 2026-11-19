@@ -12,6 +12,86 @@ function validDB(d){return d&&d.version===1&&Array.isArray(d.clients)&&Array.isA
 function notify(s){$('toast').textContent=s;$('toast').classList.remove('hide');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.add('hide'),3500)}async function persist(next){if(busy){notify('正在保存，请勿重复提交');return false}busy=true;try{let r=await api('/api/state','PUT',{rev:revision,db:next});db=next;revision=r.rev;storageOK=true;return true}catch(e){notify('保存失败：'+e.message);return false}finally{busy=false}}async function commit(fn){let d=JSON.parse(JSON.stringify(db));fn(d);return await persist(d)}function record(c,t){c.history.push({time:stamp(),text:t});c.updated=stamp()}function real(c){return !c.demo}const actual=()=>db.clients.filter(real);const overdue=c=>c.follow&&c.follow<=day()&&!['成交','关闭'].includes(c.stage);const badge=(t,cl='')=>`<span class="pill ${cl}">${esc(t||'待确认')}</span>`;const amount=n=>Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 function title(a,b,action=''){return `<div class="top"><div><h1>${a}</h1><div class="subtitle">${b}</div></div>${action}</div>`}function btn(t,a,cl=''){return `<button class="btn ${cl}" data-action="${a}">${t}</button>`}function emptyText(t){return `<div class="empty">${esc(t)}</div>`}function card(c){return `<div class="client" role="button" tabindex="0" data-client="${esc(c.id)}"><div style="display:flex;justify-content:space-between;gap:6px"><b>${esc(c.name)}</b>${c.demo?'<span class="demo">示例</span>':''}</div><div class="small muted" style="margin:7px 0">${esc(c.country||'国家待确认')} · ${esc(c.channel||'渠道待确认')}</div><div class="small">${esc(c.product||'产品待确认')}</div><div style="margin-top:8px">${badge(c.quality,c.quality==='有效 B2B'?'ok':'')}${overdue(c)?' '+badge('待跟进','warn'):''}</div></div>`}
 let activeThread = '';
+const workingReplies = new Map();
+const messageTranslations = new Map();
+const replyLanguages = ['英语','西班牙语','阿拉伯语','希伯来语','法语','葡萄牙语'];
+function replyFor(client) {
+  if (!workingReplies.has(client.id)) {
+    const saved = client.replyDraft || {};
+    workingReplies.set(client.id, {source:saved.source || '', target:saved.target || '',
+      language:saved.language || '英语', original:JSON.stringify(saved), generation:0});
+  }
+  return workingReplies.get(client.id);
+}
+function composer(client) {
+  const draft = replyFor(client);
+  const unavailable = cfg.ai ? '' : 'disabled';
+  return `<section class="section" aria-label="回复草稿"><h3>回复草稿</h3>
+    <label for="replySource">中文原稿</label><textarea maxlength="6000" id="replySource" data-reply-field="source">${esc(draft.source)}</textarea>
+    <div class="toolbar"><label for="replyLanguage">客户语言</label><select id="replyLanguage" data-reply-field="language">${opts(replyLanguages,draft.language)}</select>
+    <button class="btn secondary" data-reply-op="translate" ${unavailable}>翻译原稿</button></div>
+    <label for="replyTarget">客户语言草稿</label><textarea maxlength="6000" dir="auto" id="replyTarget" data-reply-field="target">${esc(draft.target)}</textarea>
+    <div class="toolbar"><button class="btn" data-reply-op="save">保存草稿</button><button class="btn secondary" data-reply-op="copy">复制译稿</button></div>
+    <small>${cfg.ai?'草稿由你审核后在原渠道发送。':'当前可手写、保存和复制草稿。翻译需要配置 AI 接口。'}</small></section>`;
+}
+function messageBubble(message) {
+  const translated = messageTranslations.get(message.id);
+  return `<article class="bubble"><small>${esc(message.channel)} · ${esc(fmt(message.time))}</small>
+    <div dir="auto">${esc(message.content)}</div>
+    ${translated ? '<p>中文译文<br>'+esc(translated)+'</p>' : '<button class="link" data-translate-message="'+esc(message.id)+'" '+(cfg.ai?'':'disabled')+'>查看中文译文</button>'}</article>`;
+}
+document.addEventListener('input',event=>{
+  const field = event.target.dataset.replyField;
+  if (!field) return;
+  const client = db.clients.find(c=>c.id===activeThread);
+  if (!client) return;
+  const draft = replyFor(client);
+  draft[field] = event.target.value;
+  if (field !== 'target') {
+    draft.target = '';
+    $('replyTarget').value = '';
+  }
+  draft.generation++;
+});
+document.addEventListener('click',async event=>{
+  const button = event.target.closest('[data-reply-op],[data-translate-message]');
+  if (!button) return;
+  const client = db.clients.find(c=>c.id===activeThread);
+  if (!client) return;
+  const draft = replyFor(client);
+  const generation = draft.generation;
+  button.disabled = true;
+  try {
+    if (button.hasAttribute('data-translate-message')) {
+      const message = db.messages.find(m=>m.clientId===client.id && m.id===button.dataset.translateMessage);
+      if (!message) return;
+      const result = await api('/api/ai/draft','POST',{mode:'translate',language:'中文',text:message.content});
+      messageTranslations.set(message.id,result.text);
+      if (button.isConnected) button.closest('.bubble').outerHTML = messageBubble(message);
+    } else if (button.dataset.replyOp==='translate') {
+      if (!draft.source.trim()) return notify('请先填写中文原稿');
+      const result = await api('/api/ai/draft','POST',{mode:'translate',language:draft.language,text:draft.source});
+      if (workingReplies.get(client.id)!==draft || draft.generation!==generation) return;
+      draft.target = result.text;
+      draft.generation++;
+      if (page==='聊天' && activeThread===client.id) $('replyTarget').value = draft.target;
+    } else if (button.dataset.replyOp==='copy') {
+      if (!draft.target.trim()) return notify('请先填写或生成译稿');
+      await navigator.clipboard.writeText(draft.target);
+      notify('已复制译稿');
+    } else {
+      if (JSON.stringify(client.replyDraft || {})!==draft.original) return notify('这份草稿已在其他设备修改，请先复制当前内容，再重新打开页面核对');
+      if (draft.target.length>6000) return notify('译稿超过 6000 字，请缩短后保存');
+      const saved = {source:draft.source,target:draft.target,language:draft.language};
+      if (await commit(state=>{state.clients.find(c=>c.id===client.id).replyDraft=saved;})) {
+        draft.original = JSON.stringify(saved);
+        notify('已保存 '+client.name+' 的草稿');
+      }
+    }
+  } catch(error) {notify(error.message);}
+  finally {button.disabled=false;}
+});
+
 function renderInbox() {
   const messages = new Map();
   for (const message of db.messages) {
@@ -32,11 +112,11 @@ function renderInbox() {
   const header = title('聊天工作台','客户会话与销售跟进',toolbar);
   if (!selected) return header + emptyText('当前渠道暂无客户会话');
   const thread = messages.get(selected.id) || [];
-  const timeline = thread.map(m => `<article class="bubble"><small>${esc(m.channel)} · ${esc(fmt(m.time))}</small><div>${esc(m.content)}</div></article>`).join('');
+  const timeline = thread.map(messageBubble).join('');
   const ref = /^(\d+)\/(\d+)$/.exec(selected.chatwootConversation || '');
   const open = ref && cfg.chatwoot ? safeLink(cfg.chatwoot+'/app/accounts/'+ref[1]+'/conversations/'+ref[2],'在原会话回复') : '';
   const details = [['公司',selected.company],['联系人',selected.contact],['WhatsApp',selected.phone],['意向产品',selected.product],['数量',selected.quantity],['阶段',selected.stage],['下次跟进',selected.follow],['资料确认',selected.confirm]];
-  return header + `<div class="inbox"><section class="panel"><h2>客户会话 · ${clients.length}</h2>${sidebar}</section><section class="panel"><h2>${esc(selected.name)}</h2><div class="transcript">${timeline || emptyText('还没有同步到该客户的消息')}</div>${open}</section><section class="panel"><h2>客户资料</h2><dl>${details.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v || '待确认')}</dd>`).join('')}</dl><button class="btn secondary" data-client="${esc(selected.id)}">编辑资料与跟进记录</button><h3>最近跟进</h3>${selected.history.slice(-3).reverse().map(h=>`<div class="history"><small>${esc(fmt(h.time))}</small>${esc(h.text)}</div>`).join('') || emptyText('暂无记录')}</section></div>`;
+  return header + `<div class="inbox"><section class="panel"><h2>客户会话 · ${clients.length}</h2>${sidebar}</section><section class="panel"><h2>${esc(selected.name)}</h2><div class="transcript">${timeline || emptyText('还没有同步到该客户的消息')}</div>${composer(selected)}${open}</section><section class="panel"><h2>客户资料</h2><dl>${details.map(([k,v])=>`<dt>${k}</dt><dd>${esc(v || '待确认')}</dd>`).join('')}</dl><button class="btn secondary" data-client="${esc(selected.id)}">编辑资料与跟进记录</button><h3>最近跟进</h3>${selected.history.slice(-3).reverse().map(h=>`<div class="history"><small>${esc(fmt(h.time))}</small>${esc(h.text)}</div>`).join('') || emptyText('暂无记录')}</section></div>`;
 }
 document.addEventListener('click',e=>{
   const button = e.target.closest('[data-thread]');

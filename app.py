@@ -112,6 +112,13 @@ def validate(d):
         if x.get('stage') not in STAGES or x.get('quality') not in QUAL or x.get('source') not in SOURCES or x.get('confirm') not in ['待确认','已确认'] or x.get('channel') not in CHANNELS:fail('客户枚举字段无效')
         if not isinstance(x.get('history'),list) or not isinstance(x.get('attachments'),list):fail('历史或附件格式无效')
         if any(not isinstance(x.get(f,''),str) for f in FIELDS):fail('客户字段类型无效')
+        if 'replyDraft' in x:
+            draft = x['replyDraft']
+            if not isinstance(draft, dict) or set(draft) != {'source', 'target', 'language'}:
+                fail('回复草稿格式无效')
+            if any(not isinstance(draft[k], str) or len(draft[k]) > limit
+                   for k, limit in [('source', 6000), ('target', 6000), ('language', 40)]):
+                fail('回复草稿内容或语言无效')
         for a in x['attachments']:
             if not isinstance(a,dict) or not re.fullmatch(r'data:image/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+',str(a.get('data',''))) or len(a['data'])>1400000:fail('附件格式或大小无效')
     ks=set()
